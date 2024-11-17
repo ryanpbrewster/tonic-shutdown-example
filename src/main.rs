@@ -9,7 +9,10 @@ use tracing::{info, warn};
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let Args { address } = Args::parse();
+    let Args {
+        address,
+        grace_period_ms,
+    } = Args::parse();
 
     let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
     let reflection_service = tonic_reflection::server::Builder::configure()
@@ -41,13 +44,22 @@ async fn main() -> anyhow::Result<()> {
             health_reporter
                 .set_service_status("", tonic_health::ServingStatus::NotServing)
                 .await;
+            info!("shutting down server, trying to drain traffic");
         })
     };
 
     let ungraceful_exit = async move {
         shutdown.notified().await;
-        info!("waiting up to 5s for clients to disconnect");
-        tokio::time::sleep(Duration::from_millis(5_000)).await;
+        if let Some(grace_period_ms) = grace_period_ms {
+            info!(
+                "waiting up to {}ms for clients to disconnect",
+                grace_period_ms
+            );
+            tokio::time::sleep(Duration::from_millis(grace_period_ms)).await;
+        } else {
+            info!("waiting forever for clients to disconnect");
+            let () = std::future::pending().await;
+        }
     };
 
     tokio::select! {
@@ -65,4 +77,7 @@ async fn main() -> anyhow::Result<()> {
 struct Args {
     #[arg(long, default_value = "[::]:50051")]
     address: String,
+
+    #[arg(long)]
+    grace_period_ms: Option<u64>,
 }
